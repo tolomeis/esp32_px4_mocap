@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/ee866f0b-1d2e-4d50-8783-3c1a3e9491da
 
 The firmware boots into one of two modes:
 
-- **Bridge mode** - when valid settings exist in flash: joins your WiFi as a client, subscribes to the multicast group, and streams `VISION_POSITION_ESTIMATE` (default 100 Hz) plus `HEARTBEAT` (1 Hz) over UART.
+- **Bridge mode** - when valid settings exist in flash: joins your WiFi as a client, subscribes to the multicast group (or requests a unicast stream from Motive), and streams `VISION_POSITION_ESTIMATE` (default 100 Hz) plus `HEARTBEAT` (1 Hz) over UART.
 - **Portal mode** - on first boot or after a factory reset: starts a WiFi access point with a setup portal through a web browser.
 
 ## Getting started
@@ -85,7 +85,7 @@ On a fresh flash (or after a factory reset) the bridge starts its own WiFi acces
 | Setting | Default | Notes |
 |---|---|---|
 | WiFi SSID / password | — | Your 2.4 GHz network, shared with the Motive PC |
-| Multicast address | `239.255.42.99` | Motive's default interface |
+| Multicast address | `239.255.42.99` | Motive's multicast group, **or the Motive PC's IP for unicast** (see below) |
 | Data port | `1511` | Motive's default data port |
 | NatNet version | `3.1` | Match Motive's *Streaming* pane (2.x–4.x supported) |
 | Rigid body ID | `32` | The *Streaming ID* of your rigid body in Motive |
@@ -115,6 +115,8 @@ In Motive's **Streaming** pane:
 1. Set transmission type to **Multicast** with the default address (`239.255.42.99`) and data port (`1511`).
 2. Select the network interface that is on the same LAN as your WiFi.
 3. Note the **Streaming ID** of your rigid body and enter it in the portal.
+
+**Unicast (if multicast doesn't reach the bridge).** Many WiFi routers (IGMP snooping, multicast-to-unicast) don't forward the multicast stream to the ESP32 reliably: the serial log then shows `0 pkts` although other machines receive the stream. In that case set Motive's transmission type to **Unicast** and enter the **Motive PC's IP** (e.g. `192.168.0.102`) instead of the multicast group in the portal. The bridge then sends a NatNet connect request to port `1510` (every second until data arrives, then every 5 s as a keep-alive), and Motive streams directly to it. The log shows the server's name and NatNet version when Motive answers, and warns if the version differs from the portal setting.
 
 Once the bridge connects, the serial monitor logs the incoming packet rate and the latest pose once per second.
 

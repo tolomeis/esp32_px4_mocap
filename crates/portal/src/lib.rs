@@ -42,7 +42,7 @@ pub struct Settings {
     pub wifi_ssid: String<32>,
     /// WPA2 passphrase (<= 64 bytes)
     pub wifi_pass: String<64>,
-    /// NatNet multicast group (Motive default 239.255.42.99)
+    /// NatNet multicast group (Motive default 239.255.42.99), or the Motive PC IP to request unicast
     pub multicast_addr: [u8; 4],
     /// NatNet data port (Motive default 1511)
     pub data_port: u16,
@@ -89,8 +89,9 @@ impl Settings {
         if self.wifi_ssid.is_empty() {
             return Err("WiFi SSID must not be empty");
         }
-        if !(224..=239).contains(&self.multicast_addr[0]) {
-            return Err("multicast address must be in 224.0.0.0/4");
+        // 224-239.x.x.x = multicast group, anything else = Motive PC IP for unicast
+        if self.multicast_addr[0] == 0 || self.multicast_addr[0] >= 240 {
+            return Err("address must be a multicast group (224-239.x.x.x) or the Motive PC IP");
         }
         if self.data_port == 0 {
             return Err("data port must not be 0");

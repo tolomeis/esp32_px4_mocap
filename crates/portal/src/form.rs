@@ -86,12 +86,27 @@ fn parse_dotted_quad(value: &str) -> Result<[u8; 4], &'static str> {
     for slot in &mut out {
         *slot = parts
             .next()
-            .ok_or("multicast address needs 4 octets")?
+            .ok_or("address needs 4 octets")?
             .parse()
-            .map_err(|_| "multicast octet is not 0-255")?;
+            .map_err(|_| "address octet is not 0-255")?;
     }
     if parts.next().is_some() {
-        return Err("multicast address needs exactly 4 octets");
+        return Err("address needs exactly 4 octets");
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_selects_mode() {
+        let mut s = Settings::default();
+        apply_form(&mut s, b"ssid=lab&mcast=239.255.42.99").unwrap(); // multicast group
+        apply_form(&mut s, b"ssid=lab&mcast=192.168.0.102").unwrap(); // Motive PC, unicast
+        assert_eq!(s.multicast_addr, [192, 168, 0, 102]);
+        assert!(apply_form(&mut s, b"ssid=lab&mcast=0.0.0.0").is_err());
+        assert!(apply_form(&mut s, b"ssid=lab&mcast=255.255.255.255").is_err());
+    }
 }

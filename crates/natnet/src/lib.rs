@@ -4,6 +4,50 @@
 
 /// NatNet message id for a frame of mocap data
 pub const NAT_FRAMEOFDATA: u16 = 7;
+/// Client -> server: connect / ping (server adds us as a unicast client)
+pub const NAT_CONNECT: u16 = 0;
+/// Server -> client: reply to NAT_CONNECT with the server's name and versions
+pub const NAT_SERVERINFO: u16 = 1;
+
+/// Length of a connect request built by [`connect_request`]
+pub const CONNECT_REQUEST_LEN: usize = 4 + SENDER_LEN;
+/// sSender: name[256] + app version[4] + NatNet version[4]
+const SENDER_LEN: usize = 256 + 4 + 4;
+
+/// Build a NAT_CONNECT request announcing `name` and the NatNet `version` we parse
+pub fn connect_request(name: &str, version: Version, out: &mut [u8; CONNECT_REQUEST_LEN]) {
+    out.fill(0);
+    out[0..2].copy_from_slice(&NAT_CONNECT.to_le_bytes());
+    out[2..4].copy_from_slice(&(SENDER_LEN as u16).to_le_bytes());
+    let n = name.len().min(255); // keep the NUL terminator
+    out[4..4 + n].copy_from_slice(&name.as_bytes()[..n]);
+    out[4 + 260] = version.major;
+    out[4 + 261] = version.minor;
+}
+
+/// Server info from a NAT_SERVERINFO reply
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerInfo<'a> {
+    pub name: &'a str,
+    pub app_version: [u8; 4],
+    pub natnet_version: [u8; 4],
+}
+
+/// Parse a NAT_SERVERINFO reply
+pub fn parse_server_info(data: &[u8]) -> Option<ServerInfo<'_>> {
+    let mut r = ByteReader::new(data);
+    if r.u16()? != NAT_SERVERINFO {
+        return None;
+    }
+    r.u16()?;
+    let name = r.take(256)?;
+    let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(256)];
+    Some(ServerInfo {
+        name: core::str::from_utf8(name).unwrap_or("?"),
+        app_version: r.take(4)?.try_into().ok()?,
+        natnet_version: r.take(4)?.try_into().ok()?,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
@@ -148,4 +192,33 @@ pub fn parse_frame(data: &[u8], version: Version, target_id: i32) -> Option<Rigi
     }
 
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_request_layout() {
+        let mut buf = [0u8; CONNECT_REQUEST_LEN];
+        connect_request("esp", Version::new(2, 7), &mut buf);
+        assert_eq!(&buf[0..4], &[0, 0, 0x08, 0x01]); // id 0, 264 bytes
+        assert_eq!(&buf[4..8], b"esp\0");
+        assert_eq!(&buf[264..268], &[2, 7, 0, 0]);
+    }
+
+    #[test]
+    fn server_info_roundtrip() {
+        let mut d = [0u8; 4 + 264];
+        d[0] = 1;
+        d[2..4].copy_from_slice(&264u16.to_le_bytes());
+        d[4..10].copy_from_slice(b"Motive");
+        d[260..264].copy_from_slice(&[1, 7, 0, 0]);
+        d[264..268].copy_from_slice(&[2, 7, 0, 0]);
+        let info = parse_server_info(&d).unwrap();
+        assert_eq!(info.name, "Motive");
+        assert_eq!(info.app_version, [1, 7, 0, 0]);
+        assert_eq!(info.natnet_version, [2, 7, 0, 0]);
+        assert!(parse_frame(&d, Version::new(2, 7), 1).is_none());
+    }
 }

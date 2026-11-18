@@ -260,7 +260,7 @@ async fn net_task(mut runner: Runner<'static, Interface<'static>>) -> ! {
     runner.run().await
 }
 
-/// RX loop: join multicast group and publish every parsed target pose into the POSE watch
+/// RX loop: join the multicast group (or request a unicast stream) and publish every parsed target pose into the POSE watch
 #[embassy_executor::task]
 async fn natnet_rx_task(stack: Stack<'static>, s: &'static Settings) -> ! {
     let version = natnet::Version::new(s.natnet_major, s.natnet_minor);
@@ -268,18 +268,38 @@ async fn natnet_rx_task(stack: Stack<'static>, s: &'static Settings) -> ! {
     stack.wait_config_up().await;
     info!("net: up, config {:?}", stack.config_v4());
 
-    let group = Ipv4Addr::from(s.multicast_addr);
-    stack
-        .join_multicast_group(group)
-        .expect("multicast join failed");
-    info!("net: joined multicast group {group}:{}", s.data_port);
+    // multicast group -> join it; any other address -> Motive PC, request a unicast stream
+    let addr = Ipv4Addr::from(s.multicast_addr);
+    let unicast = !addr.is_multicast();
+    if unicast {
+        info!(
+            "net: unicast mode - requesting stream from Motive at {addr}:{}",
+            config::NATNET_COMMAND_PORT
+        );
+    } else {
+        stack
+            .join_multicast_group(addr)
+            .expect("multicast join failed");
+        info!("net: joined multicast group {addr}:{}", s.data_port);
+    }
 
     let mut rx_meta = [PacketMetadata::EMPTY; 8];
     let mut rx_buf = [0u8; 4096];
     let mut tx_meta = [PacketMetadata::EMPTY; 1];
-    let mut tx_buf = [0u8; 32];
+    let mut tx_buf = [0u8; natnet::CONNECT_REQUEST_LEN];
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
     socket.bind(s.data_port).expect("UDP bind failed");
+
+    // Sent from the data socket, so Motive streams back to the data port
+    let mut connect_req = [0u8; natnet::CONNECT_REQUEST_LEN];
+    natnet::connect_request(config::NATNET_CLIENT_NAME, version, &mut connect_req);
+    let server = (addr, config::NATNET_COMMAND_PORT);
+    if unicast {
+        if let Err(e) = socket.send_to(&connect_req, server).await {
+            warn!("natnet: connect request failed: {e:?}");
+        }
+    }
+    let mut secs_since_connect: u32 = 0;
 
     let mut pkt = [0u8; 2048];
     let mut window_start = Instant::now();
@@ -288,16 +308,32 @@ async fn natnet_rx_task(stack: Stack<'static>, s: &'static Settings) -> ! {
     let mut last_pose: Option<natnet::RigidBody> = None;
 
     loop {
-        match socket.recv_from(&mut pkt).await {
-            Ok((len, _meta)) => {
+        // time out so unicast can re-send the connect request while nothing arrives
+        match embassy_time::with_timeout(Duration::from_secs(1), socket.recv_from(&mut pkt)).await {
+            Ok(Ok((len, _meta))) => {
                 pkts += 1;
                 last_len = len;
-                if let Some(rb) = natnet::parse_frame(&pkt[..len], version, s.rigid_body_id) {
+                let data = &pkt[..len];
+                if let Some(info) = natnet::parse_server_info(data) {
+                    let [a, b, c, d] = info.app_version;
+                    let [na, nb, nc, nd] = info.natnet_version;
+                    info!(
+                        "natnet: server \"{}\" v{a}.{b}.{c}.{d}, NatNet {na}.{nb}.{nc}.{nd}",
+                        info.name
+                    );
+                    if (na, nb) != (s.natnet_major, s.natnet_minor) {
+                        warn!(
+                            "natnet: server NatNet version differs from the configured {}.{} - fix it in the portal",
+                            s.natnet_major, s.natnet_minor
+                        );
+                    }
+                } else if let Some(rb) = natnet::parse_frame(data, version, s.rigid_body_id) {
                     POSE.sender().send(rb);
                     last_pose = Some(rb);
                 }
             }
-            Err(e) => warn!("natnet: recv error {e:?}"),
+            Ok(Err(e)) => warn!("natnet: recv error {e:?}"),
+            Err(_) => {} // timeout
         }
 
         let elapsed = window_start.elapsed();
@@ -313,6 +349,14 @@ async fn natnet_rx_task(stack: Stack<'static>, s: &'static Settings) -> ! {
                     "natnet: {pkts} pkts ({hz:.1} Hz, last {last_len} B) | rb{} not seen",
                     s.rigid_body_id
                 ),
+            }
+            // unicast: (re)connect every second while silent, keep-alive while streaming
+            secs_since_connect += 1;
+            if unicast && (pkts == 0 || secs_since_connect >= config::NATNET_KEEPALIVE_SECS) {
+                secs_since_connect = 0;
+                if let Err(e) = socket.send_to(&connect_req, server).await {
+                    warn!("natnet: connect request failed: {e:?}");
+                }
             }
             pkts = 0;
             window_start = Instant::now();

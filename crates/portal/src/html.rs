@@ -44,7 +44,9 @@ pub fn render_page(s: &Settings, msg: Option<&str>, out: &mut impl Write) -> fmt
          <label>Password</label><input name=\"pass\" value=\"{pass}\" maxlength=\"64\">\
          </fieldset>\
          <fieldset><legend>NatNet (Motive streaming)</legend>\
-         <label>Multicast address</label><input name=\"mcast\" value=\"{m0}.{m1}.{m2}.{m3}\">\
+         <label>Multicast group, or Motive PC IP for unicast</label><input name=\"mcast\" value=\"{m0}.{m1}.{m2}.{m3}\">\
+         <p class=\"note\">239.x.x.x = Motive Multicast. Motive PC IP (e.g. 192.168.0.102) = Motive Unicast: \
+         the bridge connects to Motive on port 1510.</p>\
          <label>Data port</label><input name=\"port\" type=\"number\" min=\"1\" max=\"65535\" value=\"{port}\">\
          <label>NatNet version major</label><input name=\"nn_major\" type=\"number\" min=\"2\" max=\"4\" value=\"{nnmaj}\">\
          <label>NatNet version minor</label><input name=\"nn_minor\" type=\"number\" min=\"0\" max=\"255\" value=\"{nnmin}\">\
